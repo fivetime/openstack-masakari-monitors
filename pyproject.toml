@@ -51,6 +51,8 @@ masakari-introspectiveinstancemonitor = "masakarimonitors.cmd.introspectiveinsta
 masakari-instancemonitor = "masakarimonitors.cmd.instancemonitor:main"
 masakari-processmonitor = "masakarimonitors.cmd.processmonitor:main"
 masakari-hostmonitor = "masakarimonitors.cmd.hostmonitor:main"
+masakari-incus-exporter = "masakarimonitors.cmd.incusexporter:main"
+masakari-incus-notifier = "masakarimonitors.cmd.incusnotifier:main"
 
 [project.entry-points."hostmonitor.driver"]
 "simple" = "masakarimonitors.hostmonitor.host_handler.handle_host:HandleHost"
