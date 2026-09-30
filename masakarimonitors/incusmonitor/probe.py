@@ -20,10 +20,15 @@ layer is recovered differently, so each is judged on its own:
 * a stale incusd needs its pod replaced, and until then a restarted
   container would only bind the dead mount again;
 * a stale container needs to be stopped and started.
+
+The AppArmor label of a container is settled the same way, at its start
+and from the state of the incusd that starts it, so the same sweep reads
+it at the same three places.
 """
 
 import time
 
+from masakarimonitors.incusmonitor import apparmor
 from masakarimonitors.incusmonitor import incus_api
 from masakarimonitors.incusmonitor import mountinfo
 
@@ -50,14 +55,22 @@ class Prober(object):
         return {
             'taken_at': self._clock(),
             'host': host,
-            'incusd': self._probe_incusd(host['device'], errors),
+            'incusd': self._probe_incusd(host, errors),
             'instances': self._probe_instances(host['device'], errors),
             'errors': errors,
         }
 
     def _probe_host(self, errors):
         host = {'up': False, 'device': None, 'error': None,
-                'lxcfs_pid': None, 'lxcfs_started_at': None}
+                'lxcfs_pid': None, 'lxcfs_started_at': None,
+                'apparmor_restricted': None}
+        try:
+            host['apparmor_restricted'] = self._proc.flag(
+                *apparmor.RESTRICTION)
+        except OSError as exc:
+            errors.append({'stage': 'host',
+                           'message': 'cannot read the AppArmor '
+                                      'restriction: %s' % exc})
         try:
             mounts = mountinfo.parse(self._proc.mountinfo(1))
         except OSError as exc:
@@ -96,16 +109,23 @@ class Prober(object):
                     self._lxcfs_pid, started_at = pid, candidate
         return self._lxcfs_pid, started_at
 
-    def _probe_incusd(self, live, errors):
-        incusd = {'pid': None, 'fresh': False, 'device': None, 'error': None}
+    def _probe_incusd(self, host, errors):
+        live = host['device']
+        # Until its label is known, incusd is taken to start containers
+        # wrongly: a restart asked for on a guess could ruin the container.
+        incusd = {'pid': None, 'fresh': False, 'device': None, 'error': None,
+                  'label': None, 'launches_stacked': True}
         try:
             incusd['pid'] = self._incus.server_pid()
             mounts = mountinfo.parse(self._proc.mountinfo(incusd['pid']))
+            incusd['label'] = self._proc.label(incusd['pid'])
         except (incus_api.IncusError, OSError, KeyError, TypeError) as exc:
             incusd['error'] = 'cannot inspect incusd: %s' % exc
             errors.append({'stage': 'incusd', 'message': incusd['error']})
             return incusd
 
+        incusd['launches_stacked'] = apparmor.launches_stacked(
+            incusd['label'], host['apparmor_restricted'])
         incusd['device'] = mountinfo.live_device(mounts, self._lxcfs_path)
         if incusd['device'] is None:
             incusd['error'] = ('incusd has no LXCFS mount at %s'
@@ -139,6 +159,8 @@ class Prober(object):
             'state': mountinfo.SKIPPED,
             'devices': [],
             'reason': None,
+            'confinement': apparmor.SKIPPED,
+            'label': None,
         }
         if not instance['running']:
             instance['reason'] = 'the instance is not running'
@@ -154,6 +176,12 @@ class Prober(object):
         if self._clock() - instance['started_at'] < self._boot_grace:
             instance['reason'] = 'the instance is still booting'
             return instance
+
+        try:
+            instance['label'] = self._proc.label(pid)
+        except OSError:
+            pass
+        instance['confinement'] = apparmor.classify(instance['label'])
 
         try:
             devices = mountinfo.lxcfs_devices(
@@ -174,5 +202,6 @@ class Prober(object):
         # of its old and new processes, so its result means nothing.
         if self._proc.start_time(pid) != instance['started_at']:
             instance['state'] = mountinfo.SKIPPED
+            instance['confinement'] = apparmor.SKIPPED
             instance['reason'] = 'the instance restarted during the probe'
         return instance

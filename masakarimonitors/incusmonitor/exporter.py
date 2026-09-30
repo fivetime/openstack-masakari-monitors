@@ -24,6 +24,7 @@ import time
 
 from oslo_log import log as oslo_logging
 
+from masakarimonitors.incusmonitor import apparmor
 from masakarimonitors.incusmonitor import mountinfo
 from masakarimonitors.incusmonitor import promtext
 
@@ -114,21 +115,42 @@ class Exporter(object):
         registry.gauge(PREFIX + '_incus_api_up',
                        'Whether the instance list could be read.',
                        instances is not None, node)
+        registry.gauge(PREFIX + '_host_apparmor_restricted',
+                       'Whether the host stacks the profile changes of '
+                       'unprivileged unconfined tasks.',
+                       bool(host['apparmor_restricted']), node)
+        registry.gauge(PREFIX + '_incusd_launches_stacked',
+                       'Whether an instance started now would get a label '
+                       'that its own profile does not match.',
+                       snapshot['incusd']['launches_stacked'], node)
 
         for name in (PREFIX + '_instances_state',
+                     PREFIX + '_instances_confinement',
                      PREFIX + '_instance_lxcfs_stale',
-                     PREFIX + '_instance_lxcfs_stale_confirmed'):
+                     PREFIX + '_instance_lxcfs_stale_confirmed',
+                     PREFIX + '_instance_apparmor_stacked'):
             registry.clear_gauge(name)
         counts = dict.fromkeys(mountinfo.STATES, 0)
+        confinements = dict.fromkeys(apparmor.STATES, 0)
         running = probed = 0
         for instance in instances or []:
             counts[instance['state']] += 1
+            confinements[instance['confinement']] += 1
             running += instance['running']
+            # The name of the label is not "instance": Prometheus gives
+            # that name to the target it scraped and renames this one.
+            labels = dict(node, incus_instance=instance['name'],
+                          nova_uuid=instance['nova_uuid'] or '')
+            if instance['confinement'] != apparmor.SKIPPED:
+                registry.gauge(PREFIX + '_instance_apparmor_stacked',
+                               'Whether unconfined is stacked onto the '
+                               'profile of the instance, so that its '
+                               'processes cannot signal each other.',
+                               instance['confinement'] == apparmor.STACKED,
+                               labels)
             if instance['state'] == mountinfo.SKIPPED:
                 continue
             probed += 1
-            labels = dict(node, instance=instance['name'],
-                          nova_uuid=instance['nova_uuid'] or '')
             registry.gauge(PREFIX + '_instance_lxcfs_stale',
                            'Whether the instance is bound to a mount the '
                            'host no longer serves.',
@@ -140,6 +162,10 @@ class Exporter(object):
         for state, count in counts.items():
             registry.gauge(PREFIX + '_instances_state',
                            'Instances by the result of the probe.',
+                           count, dict(node, state=state))
+        for state, count in confinements.items():
+            registry.gauge(PREFIX + '_instances_confinement',
+                           'Instances by what their AppArmor label says.',
                            count, dict(node, state=state))
         registry.gauge(PREFIX + '_instances_running',
                        'Instances that Incus reports as running.',

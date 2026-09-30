@@ -73,7 +73,7 @@ class TestNotifier(testtools.TestCase):
         self.instances = [instance('a', 'uuid-a'), instance('b', 'uuid-b')]
         self.host = {'up': True, 'device': '0:231',
                      'lxcfs_started_at': LXCFS_STARTED, 'device_changes': []}
-        self.incusd = {'fresh': True}
+        self.incusd = {'fresh': True, 'launches_stacked': False}
         self.taken_at = None
         self.notifier = self._notifier()
 
@@ -151,7 +151,7 @@ class TestNotifier(testtools.TestCase):
 
         self.assertEqual([], self.masakari.stored)
         self.assertIn('incus_notifier_instance_awaiting_manual'
-                      '{host="%s",instance="a",nova_uuid=""} 1\n' % HOST,
+                      '{host="%s",incus_instance="a",nova_uuid=""} 1\n' % HOST,
                       self._metrics())
 
     def test_one_recovery_at_a_time(self):
@@ -209,7 +209,7 @@ class TestNotifier(testtools.TestCase):
                       '{host="%s",result="skipped"} 1\n' % HOST,
                       self._metrics())
         self.assertIn('incus_notifier_instance_awaiting_manual'
-                      '{host="%s",instance="a",nova_uuid="uuid-a"} 1\n'
+                      '{host="%s",incus_instance="a",nova_uuid="uuid-a"} 1\n'
                       % HOST, self._metrics())
 
     def test_a_restarted_notifier_does_not_ask_twice(self):
@@ -284,7 +284,7 @@ class TestNotifier(testtools.TestCase):
         self.assertIn('incus_notifier_recoveries_total'
                       '{host="%s",result="ignored"} 1\n' % HOST,
                       self._metrics())
-        self.assertIn('instance="a"', self._metrics())
+        self.assertIn('incus_instance="a"', self._metrics())
 
     def test_a_rejection_stops_the_node_for_a_while(self):
         self.masakari.result = notifier.REJECTED
@@ -313,6 +313,14 @@ class TestNotifier(testtools.TestCase):
 
         self.assertEqual([], self.masakari.stored)
         self.assertTrue(self._blocked(notifier.INCUSD_VIEW_STALE))
+
+    def test_blocked_while_a_restart_would_come_up_stacked(self):
+        self.incusd['launches_stacked'] = True
+
+        self._step()
+
+        self.assertEqual([], self.masakari.stored)
+        self.assertTrue(self._blocked(notifier.INCUSD_LAUNCHES_STACKED))
 
     def test_blocked_without_a_generation_to_key_on(self):
         self.host['lxcfs_started_at'] = None

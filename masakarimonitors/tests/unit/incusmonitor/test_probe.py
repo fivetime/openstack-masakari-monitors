@@ -15,6 +15,7 @@ import tempfile
 
 import testtools
 
+from masakarimonitors.incusmonitor import apparmor
 from masakarimonitors.incusmonitor import mountinfo
 from masakarimonitors.incusmonitor import probe
 from masakarimonitors.incusmonitor import procfs
@@ -73,6 +74,40 @@ class TestMountinfo(testtools.TestCase):
                 (devices, live, readable))
 
 
+class TestAppArmor(testtools.TestCase):
+
+    def test_classify(self):
+        for label, expected in (
+                (fakes.CONFINED_LABEL, apparmor.CONFINED),
+                (fakes.STACKED_LABEL, apparmor.STACKED),
+                ('incus-a_</var/lib/incus> (enforce)', apparmor.CONFINED),
+                ('incus-a_</var/lib/incus>//&unconfined (enforce)',
+                 apparmor.STACKED),
+                ('unconfined//&incus-a_</var/lib/incus> (enforce)',
+                 apparmor.STACKED),
+                ('unconfined', apparmor.UNCONFINED),
+                ('unconfined\n', apparmor.UNCONFINED),
+                (fakes.NAMED_LABEL, apparmor.CONFINED),
+                # Unconfined in the container's own namespace is what
+                # every container has, not a stack onto the profile.
+                (':ns:unconfined', apparmor.UNKNOWN),
+                ('', apparmor.UNKNOWN),
+                (None, apparmor.UNKNOWN)):
+            self.assertEqual(expected, apparmor.classify(label), label)
+
+    def test_only_plain_unconfined_under_the_restriction_stacks(self):
+        for label, restricted, expected in (
+                (fakes.PLAIN_LABEL, True, True),
+                (fakes.PLAIN_LABEL, False, False),
+                (fakes.PLAIN_LABEL, None, False),
+                (fakes.NAMED_LABEL, True, False),
+                ('crio-crun (unconfined)', True, False),
+                ('crio-default (enforce)', True, False)):
+            self.assertEqual(
+                expected, apparmor.launches_stacked(label, restricted),
+                (label, restricted))
+
+
 class TestProber(testtools.TestCase):
 
     def setUp(self):
@@ -108,6 +143,51 @@ class TestProber(testtools.TestCase):
         self.assertEqual(mountinfo.FRESH, instance['state'])
         self.assertEqual('uuid-1', instance['nova_uuid'])
         self.assertEqual(OLD, instance['started_at'])
+        self.assertTrue(snapshot['host']['apparmor_restricted'])
+        self.assertEqual(fakes.NAMED_LABEL, snapshot['incusd']['label'])
+        self.assertFalse(snapshot['incusd']['launches_stacked'])
+        self.assertEqual(apparmor.CONFINED, instance['confinement'])
+        self.assertEqual(fakes.CONFINED_LABEL, instance['label'])
+
+    def test_an_instance_started_by_a_plain_unconfined_incusd(self):
+        self.tree.instance(1000, OLD, label=fakes.STACKED_LABEL)
+        self.incus.add('instance-1', 1000)
+
+        instance = self._only(self.prober.sweep())
+
+        self.assertEqual(apparmor.STACKED, instance['confinement'])
+        # The mount is judged on its own and is fine.
+        self.assertEqual(mountinfo.FRESH, instance['state'])
+
+    def test_an_instance_whose_label_cannot_be_read(self):
+        self.tree.instance(1000, OLD, label=None)
+        self.incus.add('instance-1', 1000)
+
+        snapshot = self.prober.sweep()
+
+        instance = self._only(snapshot)
+        self.assertEqual(apparmor.UNKNOWN, instance['confinement'])
+        self.assertEqual(mountinfo.FRESH, instance['state'])
+        self.assertEqual([], snapshot['errors'])
+
+    def test_a_plain_unconfined_incusd_under_the_restriction(self):
+        self.tree.incusd(label=fakes.PLAIN_LABEL)
+
+        incusd = self.prober.sweep()['incusd']
+
+        self.assertTrue(incusd['launches_stacked'])
+        self.assertTrue(incusd['fresh'])
+
+    def test_a_plain_unconfined_incusd_without_the_restriction(self):
+        self.tree.incusd(label=fakes.PLAIN_LABEL)
+        for value in (0, None):
+            self.tree.restricted(value)
+
+            snapshot = self.prober.sweep()
+
+            self.assertFalse(snapshot['incusd']['launches_stacked'])
+            self.assertFalse(snapshot['host']['apparmor_restricted'])
+            self.assertEqual([], snapshot['errors'])
 
     def test_an_instance_bound_before_the_restart_is_stale(self):
         self.tree.instance(1000, OLD, device=fakes.DEAD, readable=False)
@@ -215,6 +295,8 @@ class TestProber(testtools.TestCase):
         snapshot = self.prober.sweep()
 
         self.assertFalse(snapshot['incusd']['fresh'])
+        # Not knowing is not a reason to call a restart safe.
+        self.assertTrue(snapshot['incusd']['launches_stacked'])
         self.assertEqual(['incusd'],
                          [error['stage'] for error in snapshot['errors']])
 

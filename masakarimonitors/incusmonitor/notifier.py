@@ -70,6 +70,7 @@ MASAKARI_UNAVAILABLE = 'masakari-unavailable'
 HOST_LXCFS_DOWN = 'host-lxcfs-down'
 LXCFS_PROCESS_UNKNOWN = 'lxcfs-process-unknown'
 INCUSD_VIEW_STALE = 'incusd-view-stale'
+INCUSD_LAUNCHES_STACKED = 'incusd-launches-stacked'
 LXCFS_FLAPPING = 'lxcfs-flapping'
 RECOVERY_INEFFECTIVE = 'recovery-ineffective'
 RECOVERY_ERRORS = 'recovery-errors'
@@ -77,8 +78,8 @@ NOTIFICATION_REJECTED = 'notification-rejected'
 BLOCK_REASONS = (
     EXPORTER_UNAVAILABLE, INCUS_API_UNAVAILABLE, MASAKARI_UNAVAILABLE,
     HOST_LXCFS_DOWN, LXCFS_PROCESS_UNKNOWN, INCUSD_VIEW_STALE,
-    LXCFS_FLAPPING, RECOVERY_INEFFECTIVE, RECOVERY_ERRORS,
-    NOTIFICATION_REJECTED)
+    INCUSD_LAUNCHES_STACKED, LXCFS_FLAPPING, RECOVERY_INEFFECTIVE,
+    RECOVERY_ERRORS, NOTIFICATION_REJECTED)
 
 
 def fetch_state(url, timeout=5):
@@ -236,6 +237,11 @@ class Notifier(object):
         # again, so restarting one would interrupt it for nothing.
         if not snapshot['incusd']['fresh']:
             reasons.add(INCUSD_VIEW_STALE)
+        # A container started now would come up with a label that stops
+        # its processes from signalling each other: a restart would trade
+        # one fault for another.
+        if snapshot['incusd']['launches_stacked']:
+            reasons.add(INCUSD_LAUNCHES_STACKED)
         if snapshot['instances'] is None:
             reasons.add(INCUS_API_UNAVAILABLE)
         recent = [change for change in host.get('device_changes', [])
@@ -408,7 +414,7 @@ class Notifier(object):
             registry.gauge(PREFIX + '_instance_awaiting_manual',
                            'Stale instances that will not be recovered '
                            'automatically.', 1,
-                           dict(self._labels, instance=name,
+                           dict(self._labels, incus_instance=name,
                                 nova_uuid=instance['nova_uuid'] or ''))
 
         registry.gauge(PREFIX + '_recovery_in_flight',

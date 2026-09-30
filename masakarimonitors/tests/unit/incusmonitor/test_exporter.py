@@ -16,6 +16,7 @@ from urllib import request
 
 import testtools
 
+from masakarimonitors.incusmonitor import apparmor
 from masakarimonitors.incusmonitor import exporter
 from masakarimonitors.incusmonitor import httpd
 from masakarimonitors.incusmonitor import mountinfo
@@ -25,8 +26,9 @@ NODE = 'lxd-worker3.cloud.local'
 
 
 def instance(name='instance-1', pid=1000, state=mountinfo.STALE,
-             uuid='uuid-1'):
+             uuid='uuid-1', confinement=apparmor.CONFINED):
     return {'name': name, 'pid': pid, 'state': state, 'nova_uuid': uuid,
+            'confinement': confinement, 'label': None,
             'running': True, 'started_at': 1.0, 'created_at': '',
             'devices': [], 'reason': None, 'project': 'default'}
 
@@ -38,14 +40,18 @@ class FakeProber(object):
         self.up = True
         self.instances = []
         self.errors = []
+        self.restricted = True
+        self.launches_stacked = False
 
     def sweep(self):
         return {
             'taken_at': 100.0,
             'host': {'up': self.up, 'device': self.device, 'error': None,
-                     'lxcfs_pid': 900, 'lxcfs_started_at': 50.0},
+                     'lxcfs_pid': 900, 'lxcfs_started_at': 50.0,
+                     'apparmor_restricted': self.restricted},
             'incusd': {'pid': 500, 'fresh': True, 'device': self.device,
-                       'error': None},
+                       'error': None, 'label': None,
+                       'launches_stacked': self.launches_stacked},
             'instances': self.instances,
             'errors': self.errors,
         }
@@ -180,13 +186,69 @@ class TestExporter(testtools.TestCase):
                 'incus_exporter_instances_state'
                 '{host="%s",state="unreadable"} 0',
                 'incus_exporter_instance_lxcfs_stale'
-                '{host="%s",instance="a",nova_uuid="uuid-1"} 1',
+                '{host="%s",incus_instance="a",nova_uuid="uuid-1"} 1',
                 'incus_exporter_instance_lxcfs_stale'
-                '{host="%s",instance="b",nova_uuid=""} 0',
+                '{host="%s",incus_instance="b",nova_uuid=""} 0',
                 'incus_exporter_last_sweep_timestamp_seconds'
                 '{host="%s"} 100.0'):
             self.assertIn(line % NODE + '\n', text)
-        self.assertNotIn('instance="c"', text)
+        self.assertNotIn('incus_exporter_instance_lxcfs_stale'
+                         '{host="%s",incus_instance="c"' % NODE, text)
+
+    def test_no_label_is_called_instance(self):
+        # Prometheus names the scraped target "instance" and renames a
+        # label of that name, so an alert would show an address.
+        self.prober.instances = [instance('a', 1)]
+        self.exporter.sweep()
+
+        text = self.exporter.metrics()[1]
+
+        self.assertNotIn(',instance="', text)
+        self.assertNotIn('{instance="', text)
+
+    def test_confinement_metrics_add_up(self):
+        self.prober.launches_stacked = True
+        self.prober.instances = [
+            instance('a', 1, mountinfo.FRESH,
+                     confinement=apparmor.STACKED),
+            instance('b', 2, mountinfo.STALE),
+            instance('c', 3, mountinfo.SKIPPED,
+                     confinement=apparmor.SKIPPED),
+            instance('d', 4, mountinfo.UNKNOWN,
+                     confinement=apparmor.STACKED),
+        ]
+        self.exporter.sweep()
+
+        text = self.exporter.metrics()[1]
+
+        for line in (
+                'incus_exporter_host_apparmor_restricted{host="%s"} 1',
+                'incus_exporter_incusd_launches_stacked{host="%s"} 1',
+                'incus_exporter_instances_confinement'
+                '{host="%s",state="stacked"} 2',
+                'incus_exporter_instances_confinement'
+                '{host="%s",state="confined"} 1',
+                'incus_exporter_instances_confinement'
+                '{host="%s",state="skipped"} 1',
+                'incus_exporter_instances_confinement'
+                '{host="%s",state="unconfined"} 0',
+                'incus_exporter_instance_apparmor_stacked'
+                '{host="%s",incus_instance="a",nova_uuid="uuid-1"} 1',
+                'incus_exporter_instance_apparmor_stacked'
+                '{host="%s",incus_instance="b",nova_uuid="uuid-1"} 0',
+                # Judged although its mounts could not be.
+                'incus_exporter_instance_apparmor_stacked'
+                '{host="%s",incus_instance="d",nova_uuid="uuid-1"} 1'):
+            self.assertIn(line % NODE + '\n', text)
+        self.assertNotIn('incus_instance="c"', text)
+
+    def test_a_host_without_the_restriction(self):
+        self.prober.restricted = None
+        self.exporter.sweep()
+
+        self.assertIn(
+            'incus_exporter_host_apparmor_restricted{host="%s"} 0\n'
+            % NODE, self.exporter.metrics()[1])
 
     def test_a_deleted_instance_stops_being_reported(self):
         self.prober.instances = [instance('a', 1)]
@@ -194,7 +256,7 @@ class TestExporter(testtools.TestCase):
         self.prober.instances = []
         self.exporter.sweep()
 
-        self.assertNotIn('instance="a"', self.exporter.metrics()[1])
+        self.assertNotIn('incus_instance="a"', self.exporter.metrics()[1])
 
     def test_an_unreachable_incus_is_reported(self):
         self.prober.instances = None

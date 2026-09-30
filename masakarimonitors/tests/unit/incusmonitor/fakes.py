@@ -21,6 +21,18 @@ LIVE = '0:231'
 DEAD = '0:230'
 LXCFS_PATH = '/var/lib/lxcfs'
 
+# Taken from a production compute node: a container started by an incusd
+# that ran under a named label, one started by an incusd that ran as plain
+# unconfined, and the two labels of incusd themselves.
+CONFINED_LABEL = (
+    'incus-instance-0000b23a_</var/lib/incus>//&'
+    ':incus-instance-0000b23a_<var-lib-incus>:unconfined (enforce)')
+STACKED_LABEL = (
+    'incus-instance-0000c0da_</var/lib/incus>//&unconfined//&'
+    ':incus-instance-0000c0da_<var-lib-incus>:unconfined (enforce)')
+NAMED_LABEL = 'incusd-runtime (unconfined)'
+PLAIN_LABEL = 'unconfined'
+
 # Taken from a production compute node after an LXCFS restart.
 HOST_MOUNTS = (
     '2508 2553 253:2 /var/lib/lxcfs /var/lib/lxcfs rw,relatime shared:1 '
@@ -42,6 +54,7 @@ class ProcTree(object):
     def __init__(self, root):
         self.root = root
         self._write('stat', 'cpu 0 0 0 0\nbtime %d\n' % BOOT_TIME)
+        self.restricted(True)
 
     def _write(self, path, content):
         target = os.path.join(self.root, path)
@@ -49,7 +62,16 @@ class ProcTree(object):
         with open(target, 'w') as stream:
             stream.write(content)
 
-    def process(self, pid, started_at, comm='init', mounts=None):
+    def restricted(self, value):
+        """Set the switch, or remove it as on a kernel without it."""
+        path = 'sys/kernel/apparmor_restrict_unprivileged_unconfined'
+        if value is None:
+            os.remove(os.path.join(self.root, path))
+        else:
+            self._write(path, '%d\n' % value)
+
+    def process(self, pid, started_at, comm='init', mounts=None,
+                label=None):
         ticks = int((started_at - BOOT_TIME) * os.sysconf('SC_CLK_TCK'))
         fields = ['S', '1'] + ['0'] * 17 + [str(ticks), '0']
         self._write('%s/stat' % pid,
@@ -57,6 +79,8 @@ class ProcTree(object):
         self._write('%s/comm' % pid, comm + '\n')
         if mounts is not None:
             self._write('%s/mountinfo' % pid, mounts)
+        if label is not None:
+            self._write('%s/attr/current' % pid, label + '\n')
 
     def host(self, device=LIVE, readable=True):
         mounts = PLAIN_MOUNTS
@@ -67,15 +91,16 @@ class ProcTree(object):
             self._write('1/root%s/proc/meminfo' % LXCFS_PATH,
                         'MemTotal: 1 kB\n')
 
-    def incusd(self, pid=500, device=LIVE):
+    def incusd(self, pid=500, device=LIVE, label=NAMED_LABEL):
         self.process(pid, BOOT_TIME + 10, comm='incusd',
-                     mounts=HOST_MOUNTS % {'device': device})
+                     mounts=HOST_MOUNTS % {'device': device}, label=label)
 
-    def instance(self, pid, started_at, device=LIVE, readable=True):
+    def instance(self, pid, started_at, device=LIVE, readable=True,
+                 label=CONFINED_LABEL):
         mounts = PLAIN_MOUNTS
         if device is not None:
             mounts = INSTANCE_MOUNTS % {'device': device}
-        self.process(pid, started_at, mounts=mounts)
+        self.process(pid, started_at, mounts=mounts, label=label)
         if readable:
             self._write('%s/root/proc/meminfo' % pid, 'MemTotal: 1 kB\n')
 

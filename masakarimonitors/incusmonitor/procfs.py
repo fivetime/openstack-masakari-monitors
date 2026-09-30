@@ -39,6 +39,17 @@ class Proc(object):
     def mountinfo(self, pid):
         return self._read(pid, 'mountinfo')
 
+    def label(self, pid):
+        """Return the AppArmor label of the process."""
+        return self._read(pid, 'attr', 'current').strip()
+
+    def flag(self, *parts):
+        """Return whether a switch is on, or None where it does not exist."""
+        try:
+            return self._read(*parts).strip() not in ('', '0')
+        except FileNotFoundError:
+            return None
+
     def boot_time(self):
         for line in self._read('stat').splitlines():
             if line.startswith('btime '):
