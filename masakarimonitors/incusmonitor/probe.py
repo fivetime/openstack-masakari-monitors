@@ -47,6 +47,7 @@ class Prober(object):
         self._boot_grace = boot_grace
         self._clock = clock
         self._lxcfs_pid = None
+        self._nova_uuids = {}
 
     def sweep(self):
         """Probe every layer once and return what was found."""
@@ -143,15 +144,33 @@ class Prober(object):
         instances = [self._probe_instance(entry, live)
                      for entry in listed or []
                      if entry.get('type') == 'container']
+        names = {instance['name'] for instance in instances}
+        self._nova_uuids = {name: uuid
+                            for name, uuid in self._nova_uuids.items()
+                            if name in names}
         return sorted(instances,
                       key=lambda entry: (entry['created_at'], entry['name']))
+
+    def _nova_uuid(self, entry):
+        """Return the Nova UUID of an instance, remembered by its name.
+
+        An instance that Incus fails to render, as one that is stopping
+        can be, is listed without its configuration. Its UUID does not
+        change, so the one seen last stands in.
+        """
+        name = entry.get('name')
+        uuid = (entry.get('config') or {}).get(NOVA_UUID_KEY)
+        if uuid:
+            self._nova_uuids[name] = uuid
+            return uuid
+        return self._nova_uuids.get(name)
 
     def _probe_instance(self, entry, live):
         state = entry.get('state') or {}
         instance = {
             'name': entry.get('name'),
             'project': entry.get('project') or self._project,
-            'nova_uuid': (entry.get('config') or {}).get(NOVA_UUID_KEY),
+            'nova_uuid': self._nova_uuid(entry),
             'created_at': entry.get('created_at') or '',
             'running': entry.get('status') == 'Running',
             'pid': state.get('pid') or None,

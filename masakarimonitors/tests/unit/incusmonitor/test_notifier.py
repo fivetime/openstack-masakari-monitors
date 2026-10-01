@@ -314,6 +314,35 @@ class TestNotifier(testtools.TestCase):
         self.assertEqual([], self.masakari.stored)
         self.assertTrue(self._blocked(notifier.INCUSD_VIEW_STALE))
 
+    def test_an_unmatched_recovery_still_holds_back_the_next(self):
+        # Found on production: while an instance stops, Incus can list it
+        # without its configuration, so its Nova UUID is missing and its
+        # record matches no instance in the snapshot.
+        self._step()
+        self.assertEqual(['uuid-a'], self.masakari.sent_for())
+        self.instances[0].update(nova_uuid=None, state=mountinfo.SKIPPED,
+                                 confirmed=False, running=False)
+
+        self._step(advance=60)
+
+        self.assertEqual(['uuid-a'], self.masakari.sent_for())
+        self.assertIn('incus_notifier_recovery_in_flight'
+                      '{host="%s"} 1\n' % HOST, self._metrics())
+
+    def test_an_unmatched_recovery_still_spaces_the_next(self):
+        self._step()
+        self.instances[0].update(nova_uuid=None, state=mountinfo.SKIPPED,
+                                 confirmed=False, running=False)
+        self.masakari.settle('finished', self.now + 50)
+
+        self._step(advance=60)
+
+        self.assertEqual(['uuid-a'], self.masakari.sent_for())
+
+        self._step(advance=30)
+
+        self.assertEqual(['uuid-a', 'uuid-b'], self.masakari.sent_for())
+
     def test_blocked_while_a_restart_would_come_up_stacked(self):
         self.incusd['launches_stacked'] = True
 

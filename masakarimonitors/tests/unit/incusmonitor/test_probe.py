@@ -237,6 +237,28 @@ class TestProber(testtools.TestCase):
         self.assertEqual(mountinfo.SKIPPED,
                          self._only(self.prober.sweep())['state'])
 
+    def test_a_listing_without_configuration_keeps_the_nova_uuid(self):
+        # Found on production: Incus lists an instance it fails to render,
+        # as one that is stopping can be, without its configuration.
+        self.tree.instance(1000, OLD)
+        self.incus.add('instance-1', 1000, uuid='uuid-1')
+        self.prober.sweep()
+        del self.incus.listed[0]['config']
+
+        instance = self._only(self.prober.sweep())
+
+        self.assertEqual('uuid-1', instance['nova_uuid'])
+
+    def test_a_remembered_uuid_is_forgotten_with_the_instance(self):
+        self.tree.instance(1000, OLD)
+        self.incus.add('instance-1', 1000, uuid='uuid-1')
+        self.prober.sweep()
+        self.incus.listed = []
+        self.prober.sweep()
+        self.incus.add('instance-1', 1000, uuid=None)
+
+        self.assertIsNone(self._only(self.prober.sweep())['nova_uuid'])
+
     def test_virtual_machines_are_left_out(self):
         self.incus.add('vm-1', 1000, kind='virtual-machine')
 

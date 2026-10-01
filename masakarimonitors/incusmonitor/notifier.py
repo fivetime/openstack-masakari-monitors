@@ -200,6 +200,7 @@ class Notifier(object):
         reasons = set()
         snapshot = self._snapshot(now, reasons)
         verdicts = []
+        records = {}
         if snapshot is not None:
             reasons |= self._node_reasons(snapshot, now)
             records = self._records(snapshot, reasons)
@@ -209,16 +210,24 @@ class Notifier(object):
         if now < self._rejected_until:
             reasons.add(NOTIFICATION_REJECTED)
 
+        # Pacing is judged from the records alone. Joining them to the
+        # snapshot is not enough: while an instance stops, Incus can list
+        # it without its configuration, and a recovery whose instance
+        # cannot be matched would otherwise not hold back the next one.
+        pending = self._pending(records or {}, now)
         self._report(verdicts, now)
-        self._publish(snapshot, verdicts, reasons, now)
+        self._publish(snapshot, verdicts, reasons, now, pending)
         if reasons:
             LOG.warning('Not notifying from %s: %s', self._hostname,
                         ', '.join(sorted(reasons)))
             return
-        if any(verdict['outcome'] == IN_FLIGHT for verdict in verdicts):
+        if pending or any(verdict['outcome'] == IN_FLIGHT
+                          for verdict in verdicts):
             return
         touched = [verdict['touched_at'] for verdict in verdicts
                    if verdict['touched_at'] is not None]
+        touched += [max(record['generated_at'], record['updated_at'] or 0)
+                    for record in (records or {}).values()]
         if touched and now - max(touched) < self._min_gap:
             return
         for verdict in verdicts:
@@ -288,6 +297,14 @@ class Notifier(object):
                     record['generated_at'] > newest[uuid]['generated_at']):
                 newest[uuid] = record
         return newest
+
+    def _pending(self, records, now):
+        """Return the notifications of this generation still running."""
+        return sorted(
+            record['uuid'] for record in records.values()
+            if record['status'] not in ('finished', 'ignored', 'error',
+                                        'failed') and
+            now - record['generated_at'] <= self._recovery_timeout)
 
     def _judge(self, snapshot, records, now):
         verdicts = []
@@ -403,7 +420,7 @@ class Notifier(object):
                               'instance.',
                               dict(self._labels, result=outcome), amount)
 
-    def _publish(self, snapshot, verdicts, reasons, now):
+    def _publish(self, snapshot, verdicts, reasons, now, pending=()):
         registry = self.registry
         for reason in BLOCK_REASONS:
             registry.gauge(PREFIX + '_autoheal_blocked',
@@ -431,8 +448,9 @@ class Notifier(object):
 
         registry.gauge(PREFIX + '_recovery_in_flight',
                        'Notifications that have not settled yet.',
-                       sum(verdict['outcome'] == IN_FLIGHT
-                           for verdict in verdicts), self._labels)
+                       max(len(pending),
+                           sum(verdict['outcome'] == IN_FLIGHT
+                               for verdict in verdicts)), self._labels)
         registry.gauge(PREFIX + '_candidates',
                        'Stale instances waiting for a notification.',
                        sum(verdict['outcome'] == CANDIDATE
