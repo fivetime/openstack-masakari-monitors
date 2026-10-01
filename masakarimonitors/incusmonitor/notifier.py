@@ -186,7 +186,10 @@ class Notifier(object):
         self._clock = clock
         self._rejected_until = 0
         self._reported = set()
-        self._rehearsed = set()
+        # When each instance was rehearsed, by mount generation, so that a
+        # dry run walks the candidates in order at the pace a real run
+        # would at least keep.
+        self._rehearsed = {}
         self.registry = registry or promtext.Registry()
         self._labels = {'host': hostname}
         for result in SEND_RESULTS:
@@ -228,12 +231,20 @@ class Notifier(object):
                    if verdict['touched_at'] is not None]
         touched += [max(record['generated_at'], record['updated_at'] or 0)
                     for record in (records or {}).values()]
+        generation = snapshot['host']['lxcfs_started_at']
+        if self._dry_run:
+            touched += [at for (gen, _uuid), at in self._rehearsed.items()
+                        if gen == generation]
         if touched and now - max(touched) < self._min_gap:
             return
         for verdict in verdicts:
-            if verdict['outcome'] == CANDIDATE:
-                self._send(verdict['instance'], now)
-                return
+            if verdict['outcome'] != CANDIDATE:
+                continue
+            key = (generation, verdict['instance']['nova_uuid'])
+            if self._dry_run and key in self._rehearsed:
+                continue
+            self._send(verdict['instance'], now, generation)
+            return
 
     def _snapshot(self, now, reasons):
         try:
@@ -365,16 +376,15 @@ class Notifier(object):
             reasons.add(RECOVERY_ERRORS)
         return reasons
 
-    def _send(self, instance, now):
+    def _send(self, instance, now, generation=None):
         payload = {'event': self._event,
                    'instance_uuid': instance['nova_uuid'],
                    'vir_domain_event': self._detail}
         if self._dry_run:
-            if instance['nova_uuid'] not in self._rehearsed:
-                self._rehearsed.add(instance['nova_uuid'])
-                LOG.info('Dry run: would notify for %s with %s',
-                         instance['name'], payload)
-                self._count_send(DRY_RUN)
+            self._rehearsed[(generation, instance['nova_uuid'])] = now
+            LOG.info('Dry run: would notify for %s with %s',
+                     instance['name'], payload)
+            self._count_send(DRY_RUN)
             return
         result, detail = self._masakari.create(self._hostname, now, payload)
         self._count_send(result)

@@ -433,9 +433,38 @@ class TestNotifier(testtools.TestCase):
         self._step(advance=60)
 
         self.assertEqual([], self.masakari.stored)
+        # Both candidates are rehearsed, the second after the minimum gap.
         self.assertIn('incus_notifier_notifications_total'
-                      '{host="%s",result="dry-run"} 1\n' % HOST,
+                      '{host="%s",result="dry-run"} 2\n' % HOST,
                       self._metrics())
+
+    def test_a_dry_run_walks_every_candidate_once_and_in_order(self):
+        self.notifier = self._notifier(dry_run=True)
+
+        with mock.patch.object(notifier.LOG, 'info') as info:
+            self._step()
+            self._step(advance=10)
+            self._step(advance=30)
+            self._step(advance=60)
+            self._step(advance=60)
+
+        rehearsed = [call.args[1] for call in info.call_args_list
+                     if call.args[0].startswith('Dry run')]
+        # The second waits for the minimum gap; none is repeated.
+        self.assertEqual(['a', 'b'], rehearsed)
+        self.assertEqual([], self.masakari.stored)
+
+    def test_a_dry_run_rehearses_again_for_a_new_generation(self):
+        self.notifier = self._notifier(dry_run=True)
+        self._step()
+        self._step(advance=60)
+        self.host['lxcfs_started_at'] = self.now
+
+        with mock.patch.object(notifier.LOG, 'info') as info:
+            self._step(advance=60)
+
+        self.assertEqual(['a'], [call.args[1] for call in info.call_args_list
+                                 if call.args[0].startswith('Dry run')])
 
 
 class TestDryRunFor(testtools.TestCase):
