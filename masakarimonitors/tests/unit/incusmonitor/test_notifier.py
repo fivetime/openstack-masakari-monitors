@@ -409,6 +409,32 @@ class TestNotifier(testtools.TestCase):
                       self._metrics())
 
 
+class TestDryRunFor(testtools.TestCase):
+
+    def test_every_host_is_armed_by_default(self):
+        self.assertEqual((False, None),
+                         notifier.dry_run_for(HOST, False, []))
+
+    def test_an_armed_host_sends(self):
+        self.assertEqual((False, None), notifier.dry_run_for(
+            HOST, False, ['other.cloud.local', HOST]))
+
+    def test_a_host_left_out_only_logs(self):
+        dry_run, why = notifier.dry_run_for(
+            HOST, False, ['other.cloud.local'])
+
+        self.assertTrue(dry_run)
+        self.assertIn(HOST, why)
+
+    def test_dry_run_wins_over_the_list(self):
+        self.assertTrue(notifier.dry_run_for(HOST, True, [HOST])[0])
+
+    def test_names_must_match_exactly(self):
+        # A short name is not the name the host notifies as.
+        self.assertTrue(notifier.dry_run_for(
+            HOST, False, [HOST.split('.')[0]])[0])
+
+
 class TestMasakari(testtools.TestCase):
 
     def setUp(self):

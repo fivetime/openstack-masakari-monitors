@@ -31,6 +31,10 @@ LOG = logging.getLogger(__name__)
 
 def build():
     conf = CONF.incus_notifier
+    dry_run, why = notifier.dry_run_for(CONF.hostname, conf.dry_run,
+                                        conf.armed_hosts)
+    if dry_run:
+        LOG.info('Notifications are only logged: %s', why)
     return notifier.Notifier(
         functools.partial(notifier.fetch_state, conf.state_url),
         notifier.Masakari(), CONF.hostname,
@@ -40,7 +44,7 @@ def build():
         flap_threshold=conf.flap_threshold,
         error_threshold=conf.error_threshold,
         error_cooldown=conf.error_cooldown,
-        reject_cooldown=conf.reject_cooldown, dry_run=conf.dry_run)
+        reject_cooldown=conf.reject_cooldown, dry_run=dry_run)
 
 
 def main():
@@ -54,7 +58,6 @@ def main():
     service = build()
     conf = CONF.incus_notifier
     httpd.serve(conf.bind_host, conf.bind_port, service.routes())
-    LOG.info('Reading %s every %s seconds as %s%s', conf.state_url,
-             conf.loop_interval, CONF.hostname,
-             ' (dry run)' if conf.dry_run else '')
+    LOG.info('Reading %s every %s seconds as %s', conf.state_url,
+             conf.loop_interval, CONF.hostname)
     service.run(conf.loop_interval, stop)

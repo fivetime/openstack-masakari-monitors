@@ -112,6 +112,12 @@ notifier_opts = [
     cfg.BoolOpt('dry_run',
                 default=False,
                 help='Log the notifications instead of sending them.'),
+    cfg.ListOpt('armed_hosts',
+                default=[],
+                help='Hosts whose notifier sends notifications. On any '
+                     'other host it runs as a dry run, so that recovery '
+                     'can be enabled one node at a time from a setting '
+                     'shared by all of them. Empty means every host.'),
     cfg.HostAddressOpt('bind_host',
                        default='0.0.0.0',
                        help='Address the notifier serves its metrics on.'),

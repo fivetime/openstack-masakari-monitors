@@ -82,6 +82,18 @@ BLOCK_REASONS = (
     RECOVERY_ERRORS, NOTIFICATION_REJECTED)
 
 
+def dry_run_for(hostname, dry_run, armed_hosts):
+    """Return whether the notifier on this host only logs.
+
+    :returns: a tuple of the answer and why, for the log.
+    """
+    if dry_run:
+        return True, 'dry_run is set'
+    if armed_hosts and hostname not in armed_hosts:
+        return True, '%s is not one of the armed hosts' % hostname
+    return False, None
+
+
 def fetch_state(url, timeout=5):
     """Return the exporter's last snapshot, or None before its first."""
     with request.urlopen(url, timeout=timeout) as response:
